@@ -1,0 +1,11 @@
+Flask==2.3.0
+Flask-CORS==4.0.0
+python-dotenv==1.0.0
+twilio==8.10.0
+google-generativeai
+Pillow
+requests==2.31.0
+pymongo==4.5.0
+python-dateutil==2.8.2
+gunicorn==21.2.0
+pyngrok

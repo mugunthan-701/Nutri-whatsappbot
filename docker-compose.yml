@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  # WhatsApp Nutrition Bot
+  nutrition-bot:
+    build: .
+    container_name: whatsapp-nutrition-bot
+    ports:
+      - "5000:5000"
+    environment:
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}
+      - TWILIO_WHATSAPP_NUMBER=${TWILIO_WHATSAPP_NUMBER}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - FLASK_ENV=production
+      - DEBUG=False
+    depends_on:
+      - db
+    volumes:
+      - ./data:/data
+    networks:
+      - nutrition-network
+    restart: unless-stopped
+
+  # PostgreSQL Database (alternative to SQLite)
+  db:
+    image: postgres:15-alpine
+    container_name: nutrition-bot-db
+    environment:
+      - POSTGRES_DB=nutrition_bot
+      - POSTGRES_USER=${DB_USER:-postgres}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - nutrition-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Adminer for database management (optional)
+  adminer:
+    image: adminer:latest
+    container_name: nutrition-bot-adminer
+    ports:
+      - "8080:8080"
+    networks:
+      - nutrition-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+
+networks:
+  nutrition-network:
+    driver: bridge
