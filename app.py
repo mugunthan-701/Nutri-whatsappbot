@@ -87,7 +87,7 @@ db = Database(os.getenv('DATABASE_PATH', 'nutrition_bot.db'))
 
 # System prompt to prevent hallucination
 SYSTEM_PROMPT = """You are a helpful nutrition assistant with a mild, friendly personality.
-Goal: Analyze hunger/food requests or chat briefly.
+Goal: Analyze food/meal requests (text or images) and provide nutritional info.
 
 RULES:
 1. **BE CONCISE**: Keep responses short (under 100 words).
@@ -95,10 +95,16 @@ RULES:
 3. **NO FLUFF**: Get straight to the point.
 4. **FORMATTING**: Use bullets (•) for lists. No markdown headers.
 
-IF FOOD/MEAL:
-- Food Name
-- Approx Calories | Protein | Carbs | Fat
+IF FOOD/MEAL (text or image):
+- Identify the food item(s)
+- Approx Calories (kcal)
+- Protein (g) | Carbs (g) | Fat (g)
 - 1 sentence verdict.
+
+IF IMAGE:
+- Identify ALL food items visible in the image.
+- Estimate portion sizes.
+- Provide total Calories, Protein, Carbs, and Fat for the entire meal.
 
 IF CHAT:
 - Reply in 1-2 sentences max.
@@ -138,11 +144,13 @@ def webhook():
         # Extract media (images)
         num_media = int(request.values.get('NumMedia', 0))
         media_url = None
+        media_type = None
         if num_media > 0:
             media_url = request.values.get('MediaUrl0')
-            media_type = request.values.get('MediaContentType0')
+            media_type = request.values.get('MediaContentType0', 'image/jpeg')
             if not media_type.startswith('image/'):
                 media_url = None
+                media_type = None
         
         logger.info(f"Message from {user_phone}: {incoming_msg}")
 
@@ -185,13 +193,17 @@ def webhook():
         
         # Process image if provided
         image_data = None
+        image_mime = "image/jpeg"
         if media_url:
             image_data = download_media(media_url)
+            if image_data and media_type:
+                image_mime = media_type
         
         # Analyze meal using Gemini
         response_text = analyze_meal_with_gemini(
             incoming_msg, 
-            image_data, 
+            image_data,
+            image_mime,
             user_profile.get('health_conditions', []),
             history # Pass history
         )
@@ -222,7 +234,7 @@ def webhook():
         send_whatsapp_message(user_phone, "Sorry, I encountered an error. Please try again.")
         return "<Response></Response>", 200, {'Content-Type': 'application/xml'}
 
-def analyze_meal_with_gemini(meal_description, image_data=None, health_conditions=None, history=None):
+def analyze_meal_with_gemini(meal_description, image_data=None, image_mime="image/jpeg", health_conditions=None, history=None):
     """Analyze meal using Gemini API"""
     try:
         # Format history context if available
@@ -232,16 +244,31 @@ def analyze_meal_with_gemini(meal_description, image_data=None, health_condition
             for item in reversed(history):  # Reverse to get chronological order from older to newer
                 history_context += f"User: {item['user_input']}\nBot: {item['bot_response']}\n"
         
-        # Simplified prompt to save tokens (Consise & Low Cost)
-        prompt = f"""{history_context}
-        User Input: '{meal_description}'
+        # Include health conditions in prompt
+        health_context = ""
+        if health_conditions:
+            conditions_str = ", ".join(health_conditions)
+            health_context = f"\nUser Health Conditions: {conditions_str}. Tailor advice accordingly.\n"
         
-        Task: Provide a very short, specific response.
-        - If meal: Stats + 1 sentence verdict.
-        - If chat: 1 sentence reply.
-        - Humor: Subtle/Dry (optional).
-        - Max Length: ~60 words.
-        """
+        # Build task description based on whether image is provided
+        if image_data and not meal_description:
+            task_description = "Analyze the food in this image. Identify all items, estimate portions, and provide total Calories, Protein, Carbs, and Fat."
+        elif image_data and meal_description:
+            task_description = f"User says: '{meal_description}'. Also analyze the food image provided. Identify all items, estimate portions, and provide total Calories, Protein, Carbs, and Fat."
+        else:
+            task_description = f"User Input: '{meal_description}'"
+        
+        # Simplified prompt to save tokens (Consise & Low Cost)
+        prompt = f"""{SYSTEM_PROMPT}
+{history_context}{health_context}
+{task_description}
+
+Task: Provide a very short, specific response.
+- If meal/food (text or image): Identify items, give Calories (kcal), Protein (g), Carbs (g), Fat (g) + 1 sentence verdict.
+- If chat: 1 sentence reply.
+- Humor: Subtle/Dry (optional).
+- Max Length: ~60 words.
+"""
         
         # Prepare content for Gemini
         content = [prompt]
@@ -249,18 +276,15 @@ def analyze_meal_with_gemini(meal_description, image_data=None, health_condition
         if image_data:
             # Add image to analysis
             image_part = {
-                "mime_type": "image/jpeg",
+                "mime_type": image_mime,
                 "data": base64.b64encode(image_data).decode()
             }
             content.append(image_part)
         
-        # Call Gemini API with system context
-        full_prompt = f"{SYSTEM_PROMPT}\n\n{prompt}"
-        
         # Use a model that definitely exists
         try:
             response = gemini_model.generate_content(
-                content if image_data else full_prompt,
+                content,
                 generation_config=genai.types.GenerationConfig(
                     temperature=0.3,
                     top_p=0.8,
@@ -277,7 +301,7 @@ def analyze_meal_with_gemini(meal_description, image_data=None, health_condition
             logger.warning(f"Gemini model error: {e}. Trying 'gemini-1.5-pro'...")
             try:
                 fallback_model = genai.GenerativeModel('gemini-1.5-pro')
-                response = fallback_model.generate_content(full_prompt)
+                response = fallback_model.generate_content(content)
                 return response.text
             except Exception as fallback_error:
                  logger.error(f"Fallback model failed: {fallback_error}")
