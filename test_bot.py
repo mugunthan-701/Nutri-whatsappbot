@@ -220,7 +220,7 @@ class TestMealAnalysisKeywords(unittest.TestCase):
             self.assertTrue(is_nutrition_related(msg), f"Failed: {msg}")
 
 
-class TestHallucination Prevention(unittest.TestCase):
+class TestHallucinationPrevention(unittest.TestCase):
     """Test hallucination prevention"""
     
     def test_random_questions_rejected(self):
@@ -240,6 +240,130 @@ class TestHallucination Prevention(unittest.TestCase):
             self.assertFalse(result, f"Hallucination check failed for: {question}")
 
 
+class TestImageAnalysisPrompt(unittest.TestCase):
+    """Test image analysis prompt construction"""
+    
+    @patch('app.gemini_model')
+    def test_image_only_prompt_includes_system_prompt(self, mock_model):
+        """Test that image-only analysis includes system prompt and image instructions"""
+        from app import analyze_meal_with_gemini, SYSTEM_PROMPT
+        
+        mock_response = MagicMock()
+        mock_response.text = "• Rice and Curry\n• ~450 kcal | 15g protein | 60g carbs | 12g fat\nDecent balanced meal."
+        mock_model.generate_content.return_value = mock_response
+        
+        # Simulate image data (small fake image bytes)
+        fake_image_data = b'\x89PNG\r\n\x1a\n' + b'\x00' * 100
+        
+        result = analyze_meal_with_gemini("", fake_image_data, "image/jpeg")
+        
+        # Verify generate_content was called
+        mock_model.generate_content.assert_called_once()
+        call_args = mock_model.generate_content.call_args
+        content = call_args[0][0]
+        
+        # Content should be a list with prompt string + image part
+        self.assertIsInstance(content, list)
+        self.assertEqual(len(content), 2)
+        
+        # First element is the prompt text - should include system prompt
+        prompt_text = content[0]
+        self.assertIn("Calories", prompt_text)
+        self.assertIn("Protein", prompt_text)
+        self.assertIn("Carbs", prompt_text)
+        self.assertIn("Fat", prompt_text)
+        self.assertIn("nutrition assistant", prompt_text)
+        
+        # Second element should be the image part
+        image_part = content[1]
+        self.assertEqual(image_part["mime_type"], "image/jpeg")
+        self.assertIn("data", image_part)
+    
+    @patch('app.gemini_model')
+    def test_image_with_text_prompt(self, mock_model):
+        """Test that image+text analysis includes both user text and image instructions"""
+        from app import analyze_meal_with_gemini
+        
+        mock_response = MagicMock()
+        mock_response.text = "• Biryani\n• ~500 kcal | 20g protein | 65g carbs | 15g fat"
+        mock_model.generate_content.return_value = mock_response
+        
+        fake_image_data = b'\x89PNG\r\n\x1a\n' + b'\x00' * 100
+        
+        result = analyze_meal_with_gemini("this is my lunch biryani", fake_image_data, "image/png")
+        
+        call_args = mock_model.generate_content.call_args
+        content = call_args[0][0]
+        
+        # Prompt should mention user's text and image analysis
+        prompt_text = content[0]
+        self.assertIn("biryani", prompt_text)
+        self.assertIn("image", prompt_text.lower())
+        
+        # Image part should use correct mime type
+        image_part = content[1]
+        self.assertEqual(image_part["mime_type"], "image/png")
+    
+    @patch('app.gemini_model')
+    def test_health_conditions_in_prompt(self, mock_model):
+        """Test that health conditions are included in the prompt"""
+        from app import analyze_meal_with_gemini
+        
+        mock_response = MagicMock()
+        mock_response.text = "Analysis with health conditions considered."
+        mock_model.generate_content.return_value = mock_response
+        
+        result = analyze_meal_with_gemini(
+            "I ate rice and chicken",
+            health_conditions=["diabetes", "heart disease"]
+        )
+        
+        call_args = mock_model.generate_content.call_args
+        content = call_args[0][0]
+        
+        # Content should be a list with just the prompt (no image)
+        prompt_text = content[0]
+        self.assertIn("diabetes", prompt_text)
+        self.assertIn("heart disease", prompt_text)
+    
+    @patch('app.gemini_model')
+    def test_text_only_includes_system_prompt(self, mock_model):
+        """Test that text-only analysis also includes system prompt"""
+        from app import analyze_meal_with_gemini, SYSTEM_PROMPT
+        
+        mock_response = MagicMock()
+        mock_response.text = "• 2 Eggs + Toast\n• ~350 kcal | 20g protein | 30g carbs | 15g fat"
+        mock_model.generate_content.return_value = mock_response
+        
+        result = analyze_meal_with_gemini("I ate 2 eggs and toast")
+        
+        call_args = mock_model.generate_content.call_args
+        content = call_args[0][0]
+        
+        # Text-only content should also include system prompt
+        prompt_text = content[0]
+        self.assertIn("nutrition assistant", prompt_text)
+        self.assertIn("Calories", prompt_text)
+    
+    @patch('app.gemini_model')
+    def test_webp_image_mime_type(self, mock_model):
+        """Test that webp images are supported with correct MIME type"""
+        from app import analyze_meal_with_gemini
+        
+        mock_response = MagicMock()
+        mock_response.text = "• Salad\n• ~150 kcal | 5g protein | 20g carbs | 5g fat"
+        mock_model.generate_content.return_value = mock_response
+        
+        fake_image_data = b'\x89PNG\r\n\x1a\n' + b'\x00' * 100
+        
+        result = analyze_meal_with_gemini("salad", fake_image_data, "image/webp")
+        
+        call_args = mock_model.generate_content.call_args
+        content = call_args[0][0]
+        image_part = content[1]
+        self.assertEqual(image_part["mime_type"], "image/webp")
+
+
 def run_tests():
     """Run all tests"""
     # Create test suite
@@ -250,7 +374,8 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestValidation))
     suite.addTests(loader.loadTestsFromTestCase(TestDatabase))
     suite.addTests(loader.loadTestsFromTestCase(TestMealAnalysisKeywords))
-    suite.addTests(loader.loadTestsFromTestCase(TestHallucination Prevention))
+    suite.addTests(loader.loadTestsFromTestCase(TestHallucinationPrevention))
+    suite.addTests(loader.loadTestsFromTestCase(TestImageAnalysisPrompt))
     
     # Run tests
     runner = unittest.TextTestRunner(verbosity=2)
